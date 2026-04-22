@@ -1,0 +1,11 @@
+{
+  "name": "chat-server",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "chat-server.js",
+  "scripts": { "start": "node chat-server.js" },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  }
+}
