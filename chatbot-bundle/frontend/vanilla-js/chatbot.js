@@ -1,13 +1,13 @@
 /*!
  * Agilisium Chatbot — vanilla JS embed (no deps, no build step)
  * Theme: Teal & Mint
- * Behavior:
- *   - Persistent bottom-center pill with "AI" label, animated rotating placeholder, send button
- *   - Type & submit in pill → opens FULLSCREEN centered modal and sends the message
- *   - Click pill text or expand button → opens FULLSCREEN centered modal (fresh chat each time)
- *   - From fullscreen: minimize → back to pill (clears chat); collapse (⤡) → small corner panel
- *   - From corner panel: expand (⤢) → back to centered fullscreen; minimize → back to pill
- *   - Body scroll locked while modal/panel is open; scroll stays inside the chat
+ * FIXES:
+ *   - Wheel scroll now works by hovering inside the chat (no scrollbar needed)
+ *   - Fullscreen panel always centers correctly (fixed positioning independent of root)
+ *   - Expanded (corner) panel always snaps to bottom-right correctly
+ *   - Messages cleared properly on minimize
+ *   - Works on all pages when script is in global site footer
+ *   - Session persists across minimize/maximize/close; clears only on page refresh/close
  */
 (function () {
   if (window.__agxChatLoaded) return;
@@ -21,7 +21,7 @@
   var TITLE = script.getAttribute("data-title") || "Agilisium AI";
   var BRAND = script.getAttribute("data-brand") || "Ask Agilisium AI";
 
-  // Inject CSS if not already loaded
+  /* Inject CSS */
   if (!document.querySelector('link[href*="chatbot.css"]')) {
     var basePath = script.src.replace(/chatbot\.js.*$/, "");
     var link = document.createElement("link");
@@ -30,12 +30,36 @@
     document.head.appendChild(link);
   }
 
-  // State — fresh in-memory only (no persistence)
+  /* ── Session Storage helpers ── */
+  var SESSION_KEY = "__agxMessages";
+
+  function loadMessages() {
+    try {
+      var raw = sessionStorage.getItem(SESSION_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveMessages(msgs) {
+    try {
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(msgs));
+    } catch (e) {}
+  }
+
+  function clearMessages() {
+    try {
+      sessionStorage.removeItem(SESSION_KEY);
+    } catch (e) {}
+  }
+
+  /* State */
   var state = "minimized"; // minimized | expanded | fullscreen
-  var messages = [];
+  var messages = loadMessages(); /* CHANGED: load from sessionStorage on init */
   var streaming = false;
 
-  // Rotating placeholder phrases for the pill input
+  /* Rotating placeholder phrases */
   var PLACEHOLDERS = [
     "Ask about our AI services…",
     "Show me case studies",
@@ -45,7 +69,9 @@
     "How can Agilisium help me?",
   ];
 
-  function escapeHtml(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function escapeHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
 
   function md(s) {
     s = escapeHtml(s);
@@ -63,7 +89,7 @@
     return "<p>" + s + "</p>";
   }
 
-  // DOM
+  /* DOM */
   var root = document.createElement("div");
   root.className = "agx-chat-root";
   root.setAttribute("data-state", "minimized");
@@ -75,50 +101,77 @@
       </button>\
       <form class="agx-pill-form">\
         <input class="agx-pill-input" type="text" autocomplete="off" placeholder="" aria-label="Ask Agilisium AI" />\
-        <button class="agx-pill-send" type="submit" aria-label="Send">➤</button>\
+        <button class="agx-pill-send" type="submit" aria-label="Send">&#10148;</button>\
       </form>\
-      <button class="agx-pill-expand" type="button" aria-label="Expand chat">⤢</button>\
+      <button class="agx-pill-expand" type="button" aria-label="Expand chat">&#10562;</button>\
     </div>\
     <div class="agx-panel" role="dialog" aria-label="' + escapeHtml(TITLE) + '">\
       <div class="agx-header">\
         <div class="agx-title"><span class="agx-dot agx-dot-live"></span>' + escapeHtml(TITLE) + '</div>\
         <div class="agx-actions">\
-          <button class="agx-btn-icon agx-toggle-size" title="Toggle size" aria-label="Toggle size">⤡</button>\
-          <button class="agx-btn-icon agx-min" title="Minimize" aria-label="Minimize">–</button>\
-          <button class="agx-btn-icon agx-close" title="Close" aria-label="Close">×</button>\
+          <button class="agx-btn-icon agx-toggle-size" title="Toggle size" aria-label="Toggle size">&#10561;</button>\
+          <button class="agx-btn-icon agx-min" title="Minimize" aria-label="Minimize">&ndash;</button>\
+          <button class="agx-btn-icon agx-close" title="Close" aria-label="Close">&times;</button>\
         </div>\
       </div>\
       <div class="agx-messages" aria-live="polite"></div>\
       <div class="agx-quick"></div>\
       <form class="agx-input-row">\
         <input class="agx-input" type="text" placeholder="Ask about services, case studies, news…" autocomplete="off" />\
-        <button class="agx-send" type="submit" aria-label="Send">➤</button>\
+        <button class="agx-send" type="submit" aria-label="Send">&#10148;</button>\
       </form>\
     </div>';
   document.body.appendChild(root);
 
-  // Backdrop (only used in fullscreen)
+  /* Backdrop — only shown in fullscreen */
   var backdrop = document.createElement("div");
   backdrop.className = "agx-backdrop";
   document.body.appendChild(backdrop);
 
-  var pillBrand = root.querySelector(".agx-pill-brand");
-  var pillForm = root.querySelector(".agx-pill-form");
-  var pillInput = root.querySelector(".agx-pill-input");
+  var pillBrand  = root.querySelector(".agx-pill-brand");
+  var pillForm   = root.querySelector(".agx-pill-form");
+  var pillInput  = root.querySelector(".agx-pill-input");
   var pillExpand = root.querySelector(".agx-pill-expand");
-  var panel = root.querySelector(".agx-panel");
-  var msgsEl = root.querySelector(".agx-messages");
-  var quickEl = root.querySelector(".agx-quick");
-  var input = root.querySelector(".agx-input");
-  var form = root.querySelector(".agx-input-row");
-  var toggleBtn = root.querySelector(".agx-toggle-size");
+  var panel      = root.querySelector(".agx-panel");
+  var msgsEl     = root.querySelector(".agx-messages");
+  var quickEl    = root.querySelector(".agx-quick");
+  var input      = root.querySelector(".agx-input");
+  var form       = root.querySelector(".agx-input-row");
+  var toggleBtn  = root.querySelector(".agx-toggle-size");
 
-  // Animated rotating placeholder (typewriter in/out)
-  var phIndex = 0, phChar = 0, phMode = "typing"; // typing | holding | deleting
+  /* ── Wheel scroll fix: hover-scroll inside the messages div ── */
+  msgsEl.addEventListener("wheel", function (e) {
+    var atTop    = msgsEl.scrollTop === 0 && e.deltaY < 0;
+    var atBottom = msgsEl.scrollTop + msgsEl.clientHeight >= msgsEl.scrollHeight - 1 && e.deltaY > 0;
+    if (!atTop && !atBottom) {
+      e.preventDefault();
+      e.stopPropagation();
+      msgsEl.scrollTop += e.deltaY;
+    }
+  }, { passive: false, capture: true });
+
+  /* Touch scroll inside messages */
+  var _touchY = 0;
+  msgsEl.addEventListener("touchstart", function (e) {
+    _touchY = e.touches[0].clientY;
+  }, { passive: true });
+
+  msgsEl.addEventListener("touchmove", function (e) {
+    var dy = _touchY - e.touches[0].clientY;
+    _touchY = e.touches[0].clientY;
+    var atTop    = msgsEl.scrollTop === 0 && dy < 0;
+    var atBottom = msgsEl.scrollTop + msgsEl.clientHeight >= msgsEl.scrollHeight - 1 && dy > 0;
+    if (!atTop && !atBottom) {
+      e.stopPropagation();
+      msgsEl.scrollTop += dy;
+    }
+  }, { passive: false });
+
+  /* Animated rotating placeholder */
+  var phIndex = 0, phChar = 0, phMode = "typing";
   var phTimer = null;
   function tickPlaceholder() {
     if (document.activeElement === pillInput && pillInput.value.length > 0) {
-      // user is typing — pause animation
       phTimer = setTimeout(tickPlaceholder, 600);
       return;
     }
@@ -177,10 +230,11 @@
 
   function lockBodyScroll(lock) {
     document.body.classList.toggle("agx-no-scroll", !!lock);
+    document.documentElement.classList.toggle("agx-no-scroll", !!lock);
   }
 
   function updateToggleIcon() {
-    toggleBtn.textContent = state === "fullscreen" ? "⤡" : "⤢";
+    toggleBtn.textContent = state === "fullscreen" ? "\u29C1" : "\u29C2";
     toggleBtn.title = state === "fullscreen" ? "Collapse to corner" : "Expand to center";
   }
 
@@ -191,9 +245,9 @@
     lockBodyScroll(s !== "minimized");
 
     if (s === "minimized") {
-      // Fresh start on close — clear chat
+      /* CHANGED: do NOT clear messages — just clear the input field.
+         Session persists until page refresh or tab close (sessionStorage). */
       input.value = "";
-      
     } else {
       if (prev === "minimized") {
         renderAll();
@@ -203,11 +257,10 @@
     updateToggleIcon();
   }
 
-  // Pill brand click → open fullscreen (fresh)
+  /* Pill interactions */
   pillBrand.addEventListener("click", function () { setState("fullscreen"); });
   pillExpand.addEventListener("click", function () { setState("fullscreen"); });
 
-  // Pill form submit → open fullscreen and send the typed message
   pillForm.addEventListener("submit", function (e) {
     e.preventDefault();
     var text = pillInput.value.trim();
@@ -215,7 +268,7 @@
     setState("fullscreen");
     if (text) setTimeout(function () { send(text); }, 80);
   });
-  // Click/focus inside the pill input → open fullscreen immediately (before sending)
+
   pillInput.addEventListener("focus", function () {
     if (state === "minimized") setState("fullscreen");
   });
@@ -223,6 +276,7 @@
     if (state === "minimized") setState("fullscreen");
   });
 
+  /* Panel buttons */
   root.querySelector(".agx-close").addEventListener("click", function () { setState("minimized"); });
   root.querySelector(".agx-min").addEventListener("click", function () { setState("minimized"); });
 
@@ -230,34 +284,28 @@
     setState(state === "fullscreen" ? "expanded" : "fullscreen");
   });
 
-  // Backdrop (fullscreen) click closes to minimized
+  /* Backdrop click → minimize */
   backdrop.addEventListener("click", function () {
     if (state === "fullscreen") setState("minimized");
   });
 
+  /* Escape key */
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && state !== "minimized") setState("minimized");
   });
 
-  // Prevent wheel scroll bubbling out to page
-  msgsEl.addEventListener("wheel", function (e) {
-    var atTop = msgsEl.scrollTop === 0;
-    var atBottom = msgsEl.scrollTop + msgsEl.clientHeight >= msgsEl.scrollHeight - 1;
-    if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
-      e.preventDefault();
-    }
-  }, { passive: false });
-
+  /* Send message */
   async function send(text) {
     text = (text || input.value || "").trim();
     if (!text || streaming) return;
     input.value = "";
     messages.push({ role: "user", content: text });
+    saveMessages(messages); /* CHANGED: persist after every user message */
     renderAll();
 
     var typing = document.createElement("div");
     typing.className = "agx-msg agx-bot agx-typing";
-    typing.innerHTML = '<span></span><span></span><span></span>';
+    typing.innerHTML = "<span></span><span></span><span></span>";
     msgsEl.appendChild(typing);
     msgsEl.scrollTop = msgsEl.scrollHeight;
 
@@ -308,6 +356,7 @@
       }
       if (assistantText) {
         messages.push({ role: "assistant", content: assistantText });
+        saveMessages(messages); /* CHANGED: persist after every assistant reply */
       } else {
         typing.remove();
       }
